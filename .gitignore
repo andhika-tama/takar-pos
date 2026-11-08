@@ -13,3 +13,6 @@ docs/
 .playwright/
 .superpowers/sdd/
 .impeccable/
+
+#Graphify
+graphify-out/
