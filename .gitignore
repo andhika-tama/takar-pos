@@ -1,0 +1,15 @@
+# Playwright CLI output (may contain credentials)
+.playwright-cli/
+
+forecast/.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+.claude/
+docs/
+
+*.md
+!/README.md
+.playwright/
+.superpowers/sdd/
+.impeccable/

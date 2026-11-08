@@ -1,0 +1,49 @@
+name: CI
+
+on: push
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+
+      - name: Start the stack from a clean checkout
+        run: docker compose up --build -d
+
+      - name: Wait for https://localhost/up
+        run: |
+          for i in $(seq 1 60); do
+            [ "$(curl -k -s -o /dev/null -w '%{http_code}' https://localhost/up)" = 200 ] && exit 0
+            sleep 2
+          done
+          docker compose logs
+          exit 1
+
+      - name: PHP tests (test image has dev dependencies, runs against takar_test)
+        run: docker compose run --rm --build test
+
+      - name: JavaScript tests
+        working-directory: pos
+        run: node --test "tests/js/**/*.test.js"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Python tests
+        working-directory: forecast
+        run: |
+          pip install ".[dev]"
+          pytest
+
+  # Enabled in Task 31.
+  e2e:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Playwright goes here"

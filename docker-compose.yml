@@ -1,0 +1,136 @@
+name: takar
+
+x-pos: &pos
+  image: takar-pos
+  build:
+    context: ./pos
+  environment:
+    DB_HOST: db
+    DB_PASSWORD: ${DB_PASSWORD:-takar}
+    APP_ENV: ${APP_ENV:-production}
+    APP_DEBUG: ${APP_DEBUG:-false}
+    APP_URL: https://${SITE_ADDRESS:-localhost}
+    PHP_OPCACHE_ENABLE: "1"
+  volumes:
+    - appenv:/var/www/html/storage/app/env
+
+services:
+  # No published port: the host may already run its own PostgreSQL.
+  db:
+    restart: unless-stopped
+    image: postgres:18
+    environment:
+      POSTGRES_USER: takar
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-takar}
+      POSTGRES_DB: takar
+    volumes:
+      - dbdata:/var/lib/postgresql
+      - ./pos/docker/create-test-db.sql:/docker-entrypoint-initdb.d/create-test-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U takar -d takar"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  setup:
+    <<: *pos
+    command: ["sh", "docker/setup.sh"]
+    healthcheck:
+      disable: true
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Must stay unpublished: bootstrap/app.php trusts all proxies, so only Caddy may reach it.
+  app:
+    restart: unless-stopped
+    <<: *pos
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+
+  worker:
+    restart: unless-stopped
+    <<: *pos
+    command: ["php", "artisan", "queue:work", "--tries=3"]
+    stop_signal: SIGTERM
+    healthcheck:
+      disable: true
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+
+  scheduler:
+    restart: unless-stopped
+    <<: *pos
+    command: ["php", "artisan", "schedule:work"]
+    stop_signal: SIGTERM
+    healthcheck:
+      disable: true
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+
+  # No published port and no depends_on from the POS: selling must survive this service being down.
+  forecast:
+    restart: unless-stopped
+    build:
+      context: ./forecast
+    volumes:
+      - ./docs:/docs
+
+  # HTTPS is required for offline selling, camera and Bluetooth printing.
+  # SITE_ADDRESS=localhost uses Caddy's local CA; a real domain gets a Let's Encrypt cert.
+  proxy:
+    restart: unless-stopped
+    image: caddy:2
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+    depends_on:
+      - app
+
+  # Offline report only: docker compose run --rm evaluation
+  evaluation:
+    profiles: ["evaluation"]
+    build:
+      context: ./forecast
+      args:
+        EXTRAS: dev,evaluation
+    environment:
+      HOME: /tmp
+    volumes:
+      - ./docs:/docs
+    command: ["python", "-m", "evaluation.run", "--output", "/docs/forecast-evaluation.md"]
+
+  # CI only: docker compose run --rm test. Same image plus dev dependencies, run against takar_test.
+  test:
+    profiles: ["test"]
+    <<: *pos
+    image: takar-pos-test
+    # The << merge does not combine maps, so environment is restated with APP_ENV=testing.
+    environment:
+      DB_HOST: db
+      DB_PASSWORD: ${DB_PASSWORD:-takar}
+      APP_ENV: testing
+    build:
+      context: ./pos
+      args:
+        COMPOSER_FLAGS: ""
+    command: ["php", "artisan", "test"]
+    healthcheck:
+      disable: true
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+
+volumes:
+  appenv:
+  dbdata:
+  caddydata:
